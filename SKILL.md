@@ -1,24 +1,73 @@
 ---
 name: api-detect
 description: >
-  Probe an undocumented API multiple times to infer its input/output schema and
-  explain it from a business perspective.
+  Probe undocumented API endpoints to infer input/output schema and explain from a business perspective.
   TRIGGER when: user says an API has no docs / unknown response / no schema, or asks
-  "这个接口返回什么", "接口没有文档", "帮我分析这个API", "不知道返回结构", "schema是什么".
+  "这个接口返回什么", "接口没有文档", "帮我分析这个API", "不知道返回结构", "schema是什么",
+  "帮我分析这批接口", "这几个接口都要看", "批量检测API", "我有N个接口".
   DO NOT TRIGGER when: user already has an OpenAPI/Swagger spec or complete field docs.
 ---
 
 # API Schema Detection Skill
 
-Probe an undocumented API endpoint multiple times with varying parameters,
-infer the full input/output schema by merging all responses, and produce
-a business-level explanation.
+Probe one or multiple undocumented API endpoints using `probe.py`, then produce
+a business-level analysis of each interface.
+
+`probe.py` handles all HTTP calls and schema inference (stable, repeatable).
+Claude reads the JSON output and provides business analysis.
 
 ## Workflow
 
 Make a todo list and complete each step in order.
 
-### 1. Collect information
+---
+
+### Step 0: Single vs Batch mode
+
+**If the user provides a single URL → skip to Step 1.**
+
+**If the user provides multiple APIs or a document describing several interfaces → Batch mode:**
+
+1. **Parse the document** — extract all interfaces into a list. Show the user for confirmation before proceeding:
+
+   | # | 接口名 | Method | URL | 已知参数 |
+   |---|--------|--------|-----|---------|
+
+2. **Generate `apis.json`** — write a batch config file:
+
+   ```json
+   [
+     {
+       "name": "订单列表",
+       "url": "https://api.example.com/v1/orders",
+       "method": "GET",
+       "headers": { "Authorization": "Bearer TOKEN" },
+       "base_params": {},
+       "variants": [{"page":"1"}, {"page":"2"}, {"status":"completed"}],
+       "input_description": "分页查询订单，支持 status 过滤"
+     }
+   ]
+   ```
+
+3. **Install dependency if needed:**
+
+   ```bash
+   pip install -q requests
+   ```
+
+4. **Run batch probe:**
+
+   ```bash
+   cd /home/user/ApiCheck && python probe.py --batch apis.json
+   ```
+
+5. **Analyze each result** — for every item in the JSON array output, apply Steps 4–5 below.
+
+6. **Output batch summary report** — see Batch Wrap up section.
+
+---
+
+### Step 1: Collect information
 
 Ask the user for anything not yet provided:
 
@@ -27,68 +76,73 @@ Ask the user for anything not yet provided:
 - **Auth headers** — e.g. `Authorization: Bearer <token>`
 - **Known input parameters** — even a rough description is enough
 - **Probe variants** — different param combinations to maximize field coverage
-  (e.g. different page numbers, status values, IDs, filters)
 
-### 2. Probe the API multiple times
+### Step 2: Install dependency if needed
 
-Use the Bash tool to call the API with `curl`. Run one call per variant.
-Collect every response body, HTTP status code, and notable headers.
-
-Example single call:
 ```bash
-curl -s -w "\n%{http_code}" \
-  -H "Authorization: Bearer TOKEN" \
-  "https://api.example.com/v1/orders?page=1&status=completed"
+pip install -q requests
 ```
 
-Aim for at least 3–5 calls with different parameter combinations so that
-fields which only appear conditionally (e.g. nullable fields, paginated data,
-different status branches) are captured.
+### Step 3: Run the probe
 
-### 3. Infer the output schema
+```bash
+cd /home/user/ApiCheck && python probe.py \
+  --url "https://api.example.com/v1/orders" \
+  --method GET \
+  --header "Authorization: Bearer TOKEN" \
+  --variant '{"page": "1"}' \
+  --variant '{"page": "2"}' \
+  --variant '{"status": "completed"}'
+```
 
-From all successful (2xx) response bodies, build a JSON Schema by:
+`probe.py` outputs a single JSON object to stdout:
 
-1. **Union-merging** all responses — a field is included if it appears in *any* response
-2. **Detecting types**: `string`, `integer`, `number`, `boolean`, `array`, `object`, `null`
-3. **Detecting formats**: ISO dates (`date`, `date-time`), UUIDs, URLs, emails
-4. **Noting optionality**: mark fields that only appear in some responses as optional
-5. **Handling arrays**: infer the item schema from all observed array elements
+```json
+{
+  "url": "...",
+  "method": "GET",
+  "probes": 3,
+  "success": 3,
+  "status_codes": [200, 200, 200],
+  "inferred_schema": { "$schema": "...", "type": "object", "properties": { ... } },
+  "sample_response": { ... }
+}
+```
 
-Output the schema in JSON Schema (draft 2020-12) format.
-
-### 4. Infer the input schema
+### Step 4: Infer the input schema
 
 From the known parameters and what the API accepted/rejected, document:
 
-- Parameter names, types, and whether required or optional
+- Parameter names, types, required vs optional
 - Observed valid values and ranges
-- Any validation errors (4xx responses) that reveal constraints
+- Validation errors (4xx) that reveal constraints
 
-### 5. Produce a business-level analysis
+### Step 5: Business-level analysis
 
-Explain the API as if writing for a product manager or a new developer:
+Read `inferred_schema` and `sample_response` from the probe output, then explain:
 
 - **Purpose**: What business problem does this API solve?
 - **Field meanings**: Plain-language description of each output field
-- **Key fields**: Which fields are critical for business logic?
-- **Sensitive fields**: Flag any PII, financial data, or security tokens
-- **Use cases**: When and why would a developer call this API?
-- **Downstream usage**: What do you typically do with the response?
+- **Key fields**: Critical for business logic
+- **Sensitive fields**: PII, financial data, security tokens
+- **Use cases**: When and why a developer calls this API
+- **Downstream usage**: What you typically do with the response
 
-### 6. Handle errors
+### Step 6: Handle errors
 
 | Status | Action |
 |--------|--------|
 | 401/403 | Ask user for correct credentials, do not guess tokens |
 | 404 | Confirm URL with user, try alternate paths |
-| 422/400 | Note the validation error — it reveals input constraints |
-| 5xx | Retry once after 2s; note instability in the report |
-| Timeout | Reduce scope, try with minimal params |
+| 422/400 | Note validation error — reveals input constraints |
+| 5xx | Retry once after 2s; note instability in report |
+| Timeout | Try with minimal params |
 
-## Wrap up
+In **batch mode**: record the failure for that interface and continue to the next — never abort the whole batch.
 
-End with a structured summary:
+---
+
+## Single Interface Wrap up
 
 **接口用途**: 一句话说明业务功能
 
@@ -110,3 +164,32 @@ End with a structured summary:
 **需要关注**: 敏感字段、分页标记、状态枚举值等
 
 **建议下一步**: 开发者拿到响应后通常怎么用
+
+---
+
+## Batch Wrap up
+
+```markdown
+# API 批量探测报告
+
+## 总览
+| # | 接口名 | Method | URL | 探测次数 | 成功率 | 状态 |
+|---|--------|--------|-----|---------|--------|------|
+| 1 | 订单列表 | GET | /v1/orders | 3 | 100% | ✓ |
+| 2 | 用户信息 | GET | /v1/user | 3 | 67% | ✓ |
+| 3 | 支付回调 | POST | /v1/pay/notify | 0 | 0% | ✗ 401 |
+
+## 各接口详情
+
+### 1. 订单列表
+**用途**: ...
+**输入参数**: | 参数名 | 类型 | 必填 | 说明 |
+**输出字段**: | 字段名 | 类型 | 是否必返回 | 业务含义 |
+**JSON Schema**: ```json { ... } ```
+**需要关注**: ...
+
+### 2. ...
+
+## 失败接口
+| 接口名 | 原因 | 建议 |
+```
