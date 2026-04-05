@@ -1,22 +1,24 @@
 ---
 name: api-detect
 description: >
-  Auto-probe an undocumented API to infer input/output schema and explain it from a business perspective.
-  TRIGGER when: user says an API has no docs, unknown response format, or asks
-  "这个接口返回什么", "接口没有文档", "帮我分析这个接口", "不知道返回结构", "schema是什么".
-  DO NOT TRIGGER when: user already has an OpenAPI/Swagger spec or complete field documentation.
+  Probe an undocumented API multiple times to infer its input/output schema and
+  explain it from a business perspective.
+  TRIGGER when: user says an API has no docs / unknown response / no schema, or asks
+  "这个接口返回什么", "接口没有文档", "帮我分析这个API", "不知道返回结构", "schema是什么".
+  DO NOT TRIGGER when: user already has an OpenAPI/Swagger spec or complete field docs.
 ---
 
 # API Schema Detection Skill
 
-Probe an undocumented API multiple times, infer the complete input/output schema
-from the collected responses, and produce a business-level explanation.
+Probe an undocumented API endpoint multiple times with varying parameters,
+infer the full input/output schema by merging all responses, and produce
+a business-level explanation.
 
 ## Workflow
 
 Make a todo list and complete each step in order.
 
-### 1. Collect API information
+### 1. Collect information
 
 Ask the user for anything not yet provided:
 
@@ -24,98 +26,87 @@ Ask the user for anything not yet provided:
 - **HTTP method** — default `GET`
 - **Auth headers** — e.g. `Authorization: Bearer <token>`
 - **Known input parameters** — even a rough description is enough
-- **Probe variants** — different param combinations that expose more fields
-  (e.g. different `status`, `page`, `type` values)
+- **Probe variants** — different param combinations to maximize field coverage
+  (e.g. different page numbers, status values, IDs, filters)
 
-If the user already has a config file, skip to step 2 and use `--config <path>`.
+### 2. Probe the API multiple times
 
-### 2. Install dependencies if needed
+Use the Bash tool to call the API with `curl`. Run one call per variant.
+Collect every response body, HTTP status code, and notable headers.
 
+Example single call:
 ```bash
-cd /home/user/ApiCheck
-pip install -q requests anthropic
+curl -s -w "\n%{http_code}" \
+  -H "Authorization: Bearer TOKEN" \
+  "https://api.example.com/v1/orders?page=1&status=completed"
 ```
 
-### 3. Run the probe
+Aim for at least 3–5 calls with different parameter combinations so that
+fields which only appear conditionally (e.g. nullable fields, paginated data,
+different status branches) are captured.
 
-Assemble and run `skill.py` with the gathered information:
+### 3. Infer the output schema
 
-```bash
-cd /home/user/ApiCheck && python skill.py \
-  --url "https://api.example.com/v1/orders" \
-  --method GET \
-  --header "Authorization: Bearer TOKEN" \
-  --input-desc "分页查询订单，支持 status 过滤" \
-  --variant '{"page": "1"}' \
-  --variant '{"page": "2"}' \
-  --variant '{"status": "completed"}' \
-  --output report.json
-```
+From all successful (2xx) response bodies, build a JSON Schema by:
 
-Or with a config file:
+1. **Union-merging** all responses — a field is included if it appears in *any* response
+2. **Detecting types**: `string`, `integer`, `number`, `boolean`, `array`, `object`, `null`
+3. **Detecting formats**: ISO dates (`date`, `date-time`), UUIDs, URLs, emails
+4. **Noting optionality**: mark fields that only appear in some responses as optional
+5. **Handling arrays**: infer the item schema from all observed array elements
 
-```bash
-cd /home/user/ApiCheck && python skill.py --config probe_config.json
-```
+Output the schema in JSON Schema (draft 2020-12) format.
 
-The script will:
-1. Call the API once per `--variant` (union-merge covers more fields)
-2. Infer a JSON Schema from all 2xx responses
-3. Call Claude to produce a business-level analysis
-4. Print schema summary + analysis to stdout; write full JSON to `--output` if specified
+### 4. Infer the input schema
 
-### 4. Present results to the user
+From the known parameters and what the API accepted/rejected, document:
 
-Show three sections clearly:
+- Parameter names, types, and whether required or optional
+- Observed valid values and ranges
+- Any validation errors (4xx responses) that reveal constraints
 
-**Output Schema** — the inferred field tree (types, nested objects, arrays, formats).
+### 5. Produce a business-level analysis
 
-**Business Analysis** — what the API does, meaning of each field, use cases,
-sensitive fields, and how to use the response downstream.
+Explain the API as if writing for a product manager or a new developer:
 
-**Probe Stats** — total calls / successful / HTTP status codes seen.
+- **Purpose**: What business problem does this API solve?
+- **Field meanings**: Plain-language description of each output field
+- **Key fields**: Which fields are critical for business logic?
+- **Sensitive fields**: Flag any PII, financial data, or security tokens
+- **Use cases**: When and why would a developer call this API?
+- **Downstream usage**: What do you typically do with the response?
 
-### 5. Offer next steps
+### 6. Handle errors
 
-- More variants → better field coverage: suggest additional `--variant` values
-- Save report: remind user the full JSON is in `--output` if they specified it
-- Auth issues (401/403): ask for correct credentials and retry
+| Status | Action |
+|--------|--------|
+| 401/403 | Ask user for correct credentials, do not guess tokens |
+| 404 | Confirm URL with user, try alternate paths |
+| 422/400 | Note the validation error — it reveals input constraints |
+| 5xx | Retry once after 2s; note instability in the report |
+| Timeout | Reduce scope, try with minimal params |
 
 ## Wrap up
 
-End with a summary in this format:
+End with a structured summary:
 
-**接口用途**: 一句话说明这个 API 做什么
+**接口用途**: 一句话说明业务功能
 
-**返回字段总览**:
+**输入参数**:
 
-| 字段名 | 类型 | 业务含义 |
-|--------|------|----------|
-| ...    | ...  | ...      |
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
 
-**需要关注**: 敏感字段、关键业务字段、分页标记等
+**输出字段**:
+
+| 字段名 | 类型 | 是否必返回 | 业务含义 |
+|--------|------|-----------|----------|
+
+**完整 JSON Schema**:
+```json
+{ "$schema": "...", "type": "...", "properties": { ... } }
+```
+
+**需要关注**: 敏感字段、分页标记、状态枚举值等
 
 **建议下一步**: 开发者拿到响应后通常怎么用
-
----
-
-## Config file format reference
-
-```json
-{
-  "url": "https://api.example.com/v1/orders",
-  "method": "GET",
-  "headers": { "Authorization": "Bearer TOKEN" },
-  "base_params": { "pageSize": "20" },
-  "variants": [
-    {"page": "1"},
-    {"page": "2"},
-    {"status": "completed"},
-    {"status": "pending"}
-  ],
-  "input_description": "分页查询订单列表，支持按 status 过滤（completed/pending/cancelled）",
-  "timeout": 15,
-  "delay": 0.5,
-  "output": "order_report.json"
-}
-```
