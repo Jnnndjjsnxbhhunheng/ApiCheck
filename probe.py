@@ -2,11 +2,13 @@
 """
 probe.py — HTTP probe + JSON Schema inference for api-detect skill.
 
-Single:  python probe.py --url URL [--method GET] [--header "K:V"] [--variant '{}']
-Batch:   python probe.py --batch apis.json
+Single:   python probe.py --url URL [--method GET] [--header "K:V"] [--variant '{}']
+Batch:    python probe.py --batch apis.json
+From-py:  python probe.py --from-py apis.py
 """
 
 import argparse
+import importlib.util
 import json
 import sys
 import time
@@ -201,9 +203,36 @@ def main():
     parser.add_argument("--variant", action="append", default=[], metavar="JSON")
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--delay", type=float, default=0.3)
+    parser.add_argument("--from-py", dest="from_py", metavar="FILE",
+                        help="Load API definitions from a Python file (APIS list)")
     args = parser.parse_args()
 
-    if args.batch:
+    if args.from_py:
+        spec = importlib.util.spec_from_file_location("_apis", args.from_py)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        apis = mod.APIS
+
+        results = []
+        for api in apis:
+            method = api.get("method", "GET").upper()
+            params = api.get("params") or {}
+            body = api.get("body")
+            variants = [body if body is not None else params] if method != "GET" else [params]
+            result = probe_one(
+                url=api["url"],
+                method=method,
+                headers=api.get("headers", {}),
+                variants=variants,
+                timeout=api.get("timeout", args.timeout),
+                delay=api.get("delay", args.delay),
+            )
+            result["name"] = api.get("name", api["url"])
+            result["input_description"] = api.get("description", "")
+            results.append(result)
+        print(json.dumps(results, ensure_ascii=False, indent=2))
+
+    elif args.batch:
         with open(args.batch) as f:
             apis = json.load(f)
         results = []

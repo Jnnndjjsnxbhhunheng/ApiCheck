@@ -4,7 +4,8 @@ description: >
   Probe undocumented API endpoints to infer input/output schema and explain from a business perspective.
   TRIGGER when: user says an API has no docs / unknown response / no schema, or asks
   "这个接口返回什么", "接口没有文档", "帮我分析这个API", "不知道返回结构", "schema是什么",
-  "帮我分析这批接口", "这几个接口都要看", "批量检测API", "我有N个接口".
+  "帮我分析这批接口", "这几个接口都要看", "批量检测API", "我有N个接口",
+  "user has an apis.py file", "用Python文件定义的API", "我有apis.py".
   DO NOT TRIGGER when: user already has an OpenAPI/Swagger spec or complete field docs.
 ---
 
@@ -22,11 +23,45 @@ Make a todo list and complete each step in order.
 
 ---
 
-### Step 0: Single vs Batch mode
+### Step 0: Choose input mode
 
-**If the user provides a single URL → skip to Step 1.**
+---
 
-**If the user provides multiple APIs or a document describing several interfaces → Batch mode:**
+**① If the user has an `apis.py` file → apis.py mode (preferred):**
+
+1. **Install dependencies if needed:**
+
+   ```bash
+   pip install -q requests flask
+   ```
+
+2. **Start the mock server in the background:**
+
+   ```bash
+   cd /home/user/ApiCheck && python mock_server.py &
+   MOCK_PID=$!
+   sleep 1
+   ```
+
+3. **Run probe against the Python file:**
+
+   ```bash
+   cd /home/user/ApiCheck && python probe.py --from-py apis.py
+   ```
+
+4. **Analyze each result** — for every item in the JSON array output, apply Steps 4–5 below.
+
+5. **Output batch summary report** — see Batch Wrap up section.
+
+6. **Stop the mock server:**
+
+   ```bash
+   kill $MOCK_PID 2>/dev/null || true
+   ```
+
+---
+
+**② If the user provides multiple APIs or a document describing several interfaces → Batch mode:**
 
 1. **Parse the document** — extract all interfaces into a list. Show the user for confirmation before proceeding:
 
@@ -64,6 +99,10 @@ Make a todo list and complete each step in order.
 5. **Analyze each result** — for every item in the JSON array output, apply Steps 4–5 below.
 
 6. **Output batch summary report** — see Batch Wrap up section.
+
+---
+
+**③ If the user provides a single URL → skip to Step 1.**
 
 ---
 
