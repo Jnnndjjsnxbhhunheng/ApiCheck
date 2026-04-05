@@ -218,7 +218,12 @@ def main():
             method = api.get("method", "GET").upper()
             params = api.get("params") or {}
             body = api.get("body")
-            variants = [body if body is not None else params] if method != "GET" else [params]
+            if method != "GET":
+                variants = [body] if body is not None else [params] if params else [{}]
+            elif isinstance(params, list):
+                variants = params  # multiple variants — union-merged for better coverage
+            else:
+                variants = [params]
             result = probe_one(
                 url=api["url"],
                 method=method,

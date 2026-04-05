@@ -6,7 +6,9 @@ Each entry in APIS is one interface. Fields:
   url         : Full URL, use http://localhost:8765/... when testing with mock_server.py
   method      : HTTP method (GET, POST, PUT, PATCH, DELETE)
   headers     : Dict of request headers (e.g. Authorization)
-  params      : Query params (GET) or request body (POST/PUT)
+  params      : A single dict OR a list of dicts (variants).
+                List = multiple calls, results are union-merged → better field coverage.
+                Single dict = one call only.
   description : What this API does and what the input params mean
 """
 
@@ -24,7 +26,11 @@ APIS = [
         "url": "http://localhost:8765/orders",
         "method": "GET",
         "headers": {},
-        "params": {"page": "1", "status": "completed"},
+        "params": [
+            {"page": "1", "status": "completed"},
+            {"page": "1", "status": "pending"},
+            {"page": "1", "status": "cancelled"},
+        ],
         "description": "分页查询当前用户的订单列表，支持按 status 过滤（completed/pending/cancelled）",
     },
 ]

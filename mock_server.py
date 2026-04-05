@@ -17,7 +17,7 @@ import sys
 from urllib.parse import urlparse
 
 try:
-    from flask import Flask, jsonify
+    from flask import Flask, jsonify, request
 except ImportError:
     sys.exit("flask not installed. Run: pip install flask")
 
@@ -56,51 +56,48 @@ MOCK_RESPONSES: dict[tuple[str, str], object] = {
             "theme": "dark",
         },
     },
+    # /orders returns different shapes per status — enables union-merge to find
+    # conditional fields: paid_at (null when pending), cancel_reason (only on cancelled)
     ("GET", "/orders"): {
-        "total": 2,
-        "page": 1,
-        "page_size": 20,
-        "has_next": False,
-        "items": [
-            {
-                "order_id": "ORD-20240615-001",
-                "status": "completed",
-                "created_at": "2024-06-15T10:00:00Z",
-                "amount": 299.00,
-                "currency": "CNY",
-                "customer_id": 1,
-                "is_paid": True,
-                "paid_at": "2024-06-15T10:05:32Z",
-                "note": None,
-                "items": [
-                    {
-                        "sku": "PROD-001",
-                        "name": "云服务套餐A",
-                        "quantity": 1,
-                        "unit_price": 299.00,
-                    }
-                ],
-            },
-            {
-                "order_id": "ORD-20240620-002",
-                "status": "completed",
-                "created_at": "2024-06-20T14:30:00Z",
-                "amount": 598.00,
-                "currency": "CNY",
-                "customer_id": 1,
-                "is_paid": True,
-                "paid_at": "2024-06-20T14:31:10Z",
-                "note": "加急处理",
-                "items": [
-                    {
-                        "sku": "PROD-001",
-                        "name": "云服务套餐A",
-                        "quantity": 2,
-                        "unit_price": 299.00,
-                    }
-                ],
-            },
-        ],
+        "completed": {
+            "total": 2, "page": 1, "page_size": 20, "has_next": False,
+            "items": [
+                {
+                    "order_id": "ORD-20240615-001", "status": "completed",
+                    "created_at": "2024-06-15T10:00:00Z", "amount": 299.00,
+                    "currency": "CNY", "customer_id": 1,
+                    "is_paid": True, "paid_at": "2024-06-15T10:05:32Z",
+                    "note": None, "cancel_reason": None,
+                    "items": [{"sku": "PROD-001", "name": "云服务套餐A", "quantity": 1, "unit_price": 299.00}],
+                },
+            ],
+        },
+        "pending": {
+            "total": 1, "page": 1, "page_size": 20, "has_next": False,
+            "items": [
+                {
+                    "order_id": "ORD-20260405-003", "status": "pending",
+                    "created_at": "2026-04-05T09:00:00Z", "amount": 199.00,
+                    "currency": "CNY", "customer_id": 1,
+                    "is_paid": False, "paid_at": None,
+                    "note": "等待付款", "cancel_reason": None,
+                    "items": [{"sku": "PROD-002", "name": "云服务套餐B", "quantity": 1, "unit_price": 199.00}],
+                },
+            ],
+        },
+        "cancelled": {
+            "total": 1, "page": 1, "page_size": 20, "has_next": False,
+            "items": [
+                {
+                    "order_id": "ORD-20260101-002", "status": "cancelled",
+                    "created_at": "2026-01-01T08:00:00Z", "amount": 99.00,
+                    "currency": "CNY", "customer_id": 1,
+                    "is_paid": False, "paid_at": None,
+                    "note": None, "cancel_reason": "用户主动取消",
+                    "items": [{"sku": "PROD-003", "name": "加速包", "quantity": 1, "unit_price": 99.00}],
+                },
+            ],
+        },
     },
 }
 
@@ -129,6 +126,17 @@ def register_routes() -> None:
                 data = MOCK_RESPONSES.get(k)
                 if data is None:
                     return jsonify({"error": f"no mock defined for {k[0]} {k[1]}"}), 404
+                # If mock response is a dict-of-dicts keyed by a query param value,
+                # pick the matching sub-response (e.g. /orders keyed by "status")
+                if data and isinstance(next(iter(data.values())), dict):
+                    first_val = next(iter(data.values()))
+                    if "items" in first_val or "total" in first_val:
+                        # It's a param-keyed response — match on any query param
+                        for param_val, sub_data in data.items():
+                            if param_val in request.args.values():
+                                return jsonify(sub_data), 200
+                        # Default: return first entry
+                        return jsonify(first_val), 200
                 return jsonify(data), 200
             handler.__name__ = f"mock_{k[0]}_{k[1].replace('/', '_').strip('_')}"
             return handler
